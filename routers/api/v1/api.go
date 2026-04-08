@@ -987,6 +987,7 @@ func Routes() *web.Router {
 				}, reqSelfOrAdmin(), reqBasicOrRevProxyAuth())
 
 				m.Get("/activities/feeds", user.ListUserActivityFeeds)
+				m.Get("/encryption/publickey", user.GetUserPublicKey)
 			}, context.UserAssignmentAPI(), checkTokenPublicOnly(), individualPermsChecker)
 		}, tokenRequiresScopes(auth_model.AccessTokenScopeCategoryUser))
 
@@ -1047,6 +1048,12 @@ func Routes() *web.Router {
 
 				m.Get("/runs", reqToken(), user.ListWorkflowRuns)
 				m.Get("/jobs", reqToken(), user.ListWorkflowJobs)
+			})
+
+			m.Group("/encryption", func() {
+				m.Get("", user.GetUserEncryptionKey)
+				m.Post("", user.CreateUserEncryptionKey)
+				m.Delete("", user.DeleteUserEncryptionKey)
 			})
 
 			m.Get("/followers", user.ListMyFollowers)
@@ -1194,6 +1201,16 @@ func Routes() *web.Router {
 						m.Post("/tests", context.ReferencesGitRepo(), context.RepoRefForAPI, repo.TestHook)
 					})
 				}, reqToken(), reqAdmin(), reqWebhooksEnabled())
+				m.Group("/encryption", func() {
+					m.Get("", repo.GetRepoEncryptionConfig)
+					m.Put("", repo.UpdateRepoEncryptionConfig)
+					m.Group("/keys", func() {
+						m.Get("", repo.GetRepoEncryptionKey)
+						m.Post("", repo.SetRepoEncryptionKey)
+						m.Get("/list", repo.ListRepoEncryptionKeys)
+						m.Delete("", repo.DeleteRepoEncryptionKeys)
+					})
+				}, reqToken(), reqAdmin())
 				m.Group("/collaborators", func() {
 					m.Get("", reqAnyRepoReader(), repo.ListCollaborators)
 					m.Group("/{collaborator}", func() {
@@ -1648,6 +1665,10 @@ func Routes() *web.Router {
 					Patch(bind(api.EditHookOption{}), org.EditHook).
 					Delete(org.DeleteHook)
 			}, reqToken(), reqOrgOwnership(), reqWebhooksEnabled())
+			m.Group("/encryption", func() {
+				m.Get("", org.GetOrgEncryptionConfig)
+				m.Put("", org.UpdateOrgEncryptionConfig)
+			}, reqToken(), reqOrgOwnership())
 			m.Group("/avatar", func() {
 				m.Post("", bind(api.UpdateUserAvatarOption{}), org.UpdateAvatar)
 				m.Delete("", org.DeleteAvatar)
@@ -1735,6 +1756,11 @@ func Routes() *web.Router {
 				})
 				m.Get("/runs", admin.ListWorkflowRuns)
 				m.Get("/jobs", admin.ListWorkflowJobs)
+			})
+			m.Group("/encryption", func() {
+				m.Get("/status", admin.GetEncryptionStatus)
+				m.Post("/migrate", admin.TriggerEncryptionMigration)
+				m.Post("/backup-key", admin.BackupEncryptionKey)
 			})
 		}, tokenRequiresScopes(auth_model.AccessTokenScopeCategoryAdmin), reqToken(), reqSiteAdmin())
 

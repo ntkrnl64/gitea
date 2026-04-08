@@ -21,11 +21,13 @@ import (
 	repo_model "code.gitea.io/gitea/models/repo"
 	user_model "code.gitea.io/gitea/models/user"
 	"code.gitea.io/gitea/modules/container"
+	"code.gitea.io/gitea/modules/encryption"
 	"code.gitea.io/gitea/modules/htmlutil"
 	"code.gitea.io/gitea/modules/json"
 	"code.gitea.io/gitea/modules/log"
 	"code.gitea.io/gitea/modules/optional"
 	"code.gitea.io/gitea/modules/references"
+	"code.gitea.io/gitea/modules/setting"
 	"code.gitea.io/gitea/modules/structs"
 	"code.gitea.io/gitea/modules/timeutil"
 	"code.gitea.io/gitea/modules/translation"
@@ -373,6 +375,12 @@ func (c *Comment) BeforeInsert() {
 	if !utf8.ValidString(c.Patch) {
 		c.PatchQuoted = strconv.Quote(c.Patch)
 	}
+	if setting.Encryption.Enabled && setting.Encryption.EncryptDatabaseFields {
+		scope := encryption.KeyScope{RepoID: c.IssueID} // use IssueID as approximate repo scope
+		if encrypted, err := encryption.EncryptField(c.Content, scope); err == nil {
+			c.Content = encrypted
+		}
+	}
 }
 
 // BeforeUpdate will be invoked by XORM before updating a record
@@ -380,6 +388,12 @@ func (c *Comment) BeforeUpdate() {
 	c.PatchQuoted = c.Patch
 	if !utf8.ValidString(c.Patch) {
 		c.PatchQuoted = strconv.Quote(c.Patch)
+	}
+	if setting.Encryption.Enabled && setting.Encryption.EncryptDatabaseFields {
+		scope := encryption.KeyScope{RepoID: c.IssueID}
+		if encrypted, err := encryption.EncryptField(c.Content, scope); err == nil {
+			c.Content = encrypted
+		}
 	}
 }
 
@@ -392,6 +406,7 @@ func (c *Comment) AfterLoad() {
 			c.Patch = unquoted
 		}
 	}
+	c.Content = encryption.MaybeDecryptField(c.Content)
 }
 
 // LoadPoster loads comment poster

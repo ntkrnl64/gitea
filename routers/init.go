@@ -36,6 +36,7 @@ import (
 	actions_service "code.gitea.io/gitea/services/actions"
 	asymkey_service "code.gitea.io/gitea/services/asymkey"
 	"code.gitea.io/gitea/services/auth"
+	encryption_service "code.gitea.io/gitea/services/encryption"
 	"code.gitea.io/gitea/services/auth/source/oauth2"
 	"code.gitea.io/gitea/services/automerge"
 	"code.gitea.io/gitea/services/cron"
@@ -123,6 +124,7 @@ func InitWebInstalled(ctx context.Context) {
 	translation.InitLocales(ctx)
 
 	setting.LoadSettings()
+	encryption_service.InitEncryption()
 	mustInit(storage.Init)
 
 	mailer.NewContext(ctx)

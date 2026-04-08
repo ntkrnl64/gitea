@@ -1,0 +1,31 @@
+{
+  "manifest_version": 2,
+  "name": "Gitea E2E Encryption Verifier",
+  "version": "1.0.0",
+  "description": "Verifies the integrity of Gitea's post-quantum E2E encryption WASM module against signed checksums hosted on giteachecksums.krnl64.win",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "gitea-e2e-verify@krnl64.win",
+      "strict_min_version": "109.0"
+    }
+  },
+  "permissions": [
+    "activeTab",
+    "https://giteachecksums.krnl64.win/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["verify.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "48": "icon48.png",
+    "128": "icon128.png"
+  },
+  "browser_action": {
+    "default_popup": "popup.html",
+    "default_icon": "icon48.png"
+  }
+}

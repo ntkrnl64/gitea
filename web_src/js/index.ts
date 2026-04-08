@@ -68,6 +68,7 @@ import {initRepoViewFileTree} from './features/repo-view-file-tree.ts';
 import {initActionsPermissionsForm} from './features/common-actions-permissions.ts';
 import {initGlobalShortcut} from './modules/shortcut.ts';
 import {initDevtest} from './modules/devtest.ts';
+import {initRepoEncryption} from './features/repo-encryption.ts';
 
 const initStartTime = performance.now();
 const initPerformanceTracer = callInitFunctions([
@@ -139,6 +140,7 @@ const initPerformanceTracer = callInitFunctions([
   initRepoTopicBar,
   initRepoViewFileTree,
   initRepoWikiForm,
+  initRepoEncryption,
   initRepository,
   initRepositoryActionView,
   initRepositorySearch,

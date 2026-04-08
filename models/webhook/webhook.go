@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"code.gitea.io/gitea/models/db"
+	"code.gitea.io/gitea/modules/encryption"
 	"code.gitea.io/gitea/modules/json"
 	"code.gitea.io/gitea/modules/log"
 	"code.gitea.io/gitea/modules/optional"
@@ -153,6 +154,41 @@ func (w *Webhook) AfterLoad() {
 	w.HookEvent = &webhook_module.HookEvent{}
 	if err := json.Unmarshal([]byte(w.Events), w.HookEvent); err != nil {
 		log.Error("Unmarshal[%d]: %v", w.ID, err)
+	}
+	w.URL = encryption.MaybeDecryptField(w.URL)
+	w.Secret = encryption.MaybeDecryptField(w.Secret)
+	w.HeaderAuthorizationEncrypted = encryption.MaybeDecryptField(w.HeaderAuthorizationEncrypted)
+}
+
+// BeforeInsert encrypts sensitive webhook fields before database insert.
+func (w *Webhook) BeforeInsert() {
+	if setting.Encryption.Enabled && setting.Encryption.EncryptDatabaseFields {
+		scope := encryption.KeyScope{RepoID: w.RepoID}
+		if encrypted, err := encryption.EncryptField(w.URL, scope); err == nil {
+			w.URL = encrypted
+		}
+		if encrypted, err := encryption.EncryptField(w.Secret, scope); err == nil {
+			w.Secret = encrypted
+		}
+		if encrypted, err := encryption.EncryptField(w.HeaderAuthorizationEncrypted, scope); err == nil {
+			w.HeaderAuthorizationEncrypted = encrypted
+		}
+	}
+}
+
+// BeforeUpdate encrypts sensitive webhook fields before database update.
+func (w *Webhook) BeforeUpdate() {
+	if setting.Encryption.Enabled && setting.Encryption.EncryptDatabaseFields {
+		scope := encryption.KeyScope{RepoID: w.RepoID}
+		if encrypted, err := encryption.EncryptField(w.URL, scope); err == nil {
+			w.URL = encrypted
+		}
+		if encrypted, err := encryption.EncryptField(w.Secret, scope); err == nil {
+			w.Secret = encrypted
+		}
+		if encrypted, err := encryption.EncryptField(w.HeaderAuthorizationEncrypted, scope); err == nil {
+			w.HeaderAuthorizationEncrypted = encrypted
+		}
 	}
 }
 

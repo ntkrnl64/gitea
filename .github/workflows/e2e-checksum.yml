@@ -1,0 +1,129 @@
+name: e2e-checksum
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "web_src/wasm/gitea-crypto/**"
+      - "public/assets/wasm/**"
+      - ".github/workflows/e2e-checksum.yml"
+    tags:
+      - "v*"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-checksum:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build WASM module
+        run: |
+          cd web_src/wasm/gitea-crypto
+          RUSTFLAGS="-C target-feature=+bulk-memory" \
+            wasm-pack build --target web --release --out-dir ../../../public/assets/wasm
+
+      - name: Compute checksums
+        id: checksums
+        run: |
+          WASM_FILE="public/assets/wasm/gitea_crypto_bg.wasm"
+          JS_FILE="public/assets/wasm/gitea_crypto.js"
+
+          WASM_SHA256=$(sha256sum "$WASM_FILE" | cut -d' ' -f1)
+          JS_SHA256=$(sha256sum "$JS_FILE" | cut -d' ' -f1)
+          WASM_SIZE=$(stat -c%s "$WASM_FILE")
+
+          echo "wasm_sha256=$WASM_SHA256" >> "$GITHUB_OUTPUT"
+          echo "js_sha256=$JS_SHA256" >> "$GITHUB_OUTPUT"
+          echo "wasm_size=$WASM_SIZE" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare checksum files
+        env:
+          WASM_SHA256: ${{ steps.checksums.outputs.wasm_sha256 }}
+          JS_SHA256: ${{ steps.checksums.outputs.js_sha256 }}
+          WASM_SIZE: ${{ steps.checksums.outputs.wasm_size }}
+        run: |
+          # Clean workspace for checksum-only commit
+          CHECKSUM_DIR=$(mktemp -d)
+
+          BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          # Write checksum file named by commit SHA
+          printf '{\n  "commit": "%s",\n  "ref": "%s",\n  "ref_name": "%s",\n  "wasm_sha256": "%s",\n  "js_sha256": "%s",\n  "wasm_size": %s,\n  "built_at": "%s",\n  "workflow_run": "%s"\n}\n' \
+            "${{ github.sha }}" "${{ github.ref }}" "${{ github.ref_name }}" \
+            "$WASM_SHA256" "$JS_SHA256" "$WASM_SIZE" "$BUILT_AT" \
+            "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            > "$CHECKSUM_DIR/checksum.json"
+
+          echo "$CHECKSUM_DIR" > /tmp/checksum_dir
+
+      - name: Publish commit checksum
+        env:
+          WASM_SHA256: ${{ steps.checksums.outputs.wasm_sha256 }}
+          JS_SHA256: ${{ steps.checksums.outputs.js_sha256 }}
+          WASM_SIZE: ${{ steps.checksums.outputs.wasm_size }}
+        run: |
+          CHECKSUM_DIR=$(cat /tmp/checksum_dir)
+          BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          # Set up a clean worktree for the checksum branch
+          git fetch origin checksum 2>/dev/null || true
+
+          # Check if checksum branch exists
+          if git rev-parse --verify origin/checksum 2>/dev/null; then
+            git worktree add /tmp/checksum-wt origin/checksum
+          else
+            git worktree add --orphan /tmp/checksum-wt checksum
+            cd /tmp/checksum-wt
+            git checkout --orphan checksum
+            echo '# E2E Encryption WASM Checksums' > README.md
+            echo '' >> README.md
+            echo 'Each file is named by commit SHA or tag name.' >> README.md
+            echo 'Verification: https://giteachecksums.krnl64.win' >> README.md
+            git add README.md
+            git -c user.name="github-actions[bot]" \
+                -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+                commit -m "init: checksum branch"
+            git push origin checksum
+            cd -
+          fi
+
+          # Copy checksum file with commit SHA name
+          cp "$CHECKSUM_DIR/checksum.json" "/tmp/checksum-wt/${{ github.sha }}"
+
+          # For tags, also create tag-named file and update latest
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            cp "$CHECKSUM_DIR/checksum.json" "/tmp/checksum-wt/${{ github.ref_name }}"
+            cp "$CHECKSUM_DIR/checksum.json" "/tmp/checksum-wt/latest"
+          fi
+
+      - name: Commit checksums via verified bot
+        uses: siiway/verified_bot_commit@v0
+        with:
+          ref: refs/heads/checksum
+          workspace: /tmp/checksum-wt
+          message: |
+            checksum: ${{ github.sha }}
+
+            wasm_sha256: ${{ steps.checksums.outputs.wasm_sha256 }}
+            js_sha256: ${{ steps.checksums.outputs.js_sha256 }}
+            source_commit: ${{ github.sha }}
+            source_ref: ${{ github.ref }}
+          files: |
+            ${{ github.sha }}
+            ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+            ${{ github.ref_type == 'tag' && 'latest' || '' }}

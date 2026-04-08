@@ -213,9 +213,19 @@ func NewStorage(typStr Type, cfg *setting.Storage) (ObjectStorage, error) {
 	return fn(context.Background(), cfg)
 }
 
+func wrapEncryption(s ObjectStorage) ObjectStorage {
+	if setting.Encryption.Enabled && setting.Encryption.EncryptStorage {
+		return WrapStorageWithEncryption(s, int(setting.Encryption.ChunkSize))
+	}
+	return s
+}
+
 func initAvatars() (err error) {
 	log.Info("Initialising Avatar storage with type: %s", setting.Avatar.Storage.Type)
 	Avatars, err = NewStorage(setting.Avatar.Storage.Type, setting.Avatar.Storage)
+	if err == nil {
+		Avatars = wrapEncryption(Avatars)
+	}
 	return err
 }
 
@@ -226,6 +236,9 @@ func initAttachments() (err error) {
 	}
 	log.Info("Initialising Attachment storage with type: %s", setting.Attachment.Storage.Type)
 	Attachments, err = NewStorage(setting.Attachment.Storage.Type, setting.Attachment.Storage)
+	if err == nil {
+		Attachments = wrapEncryption(Attachments)
+	}
 	return err
 }
 
@@ -236,18 +249,27 @@ func initLFS() (err error) {
 	}
 	log.Info("Initialising LFS storage with type: %s", setting.LFS.Storage.Type)
 	LFS, err = NewStorage(setting.LFS.Storage.Type, setting.LFS.Storage)
+	if err == nil {
+		LFS = wrapEncryption(LFS)
+	}
 	return err
 }
 
 func initRepoAvatars() (err error) {
 	log.Info("Initialising Repository Avatar storage with type: %s", setting.RepoAvatar.Storage.Type)
 	RepoAvatars, err = NewStorage(setting.RepoAvatar.Storage.Type, setting.RepoAvatar.Storage)
+	if err == nil {
+		RepoAvatars = wrapEncryption(RepoAvatars)
+	}
 	return err
 }
 
 func initRepoArchives() (err error) {
 	log.Info("Initialising Repository Archive storage with type: %s", setting.RepoArchive.Storage.Type)
 	RepoArchives, err = NewStorage(setting.RepoArchive.Storage.Type, setting.RepoArchive.Storage)
+	if err == nil {
+		RepoArchives = wrapEncryption(RepoArchives)
+	}
 	return err
 }
 
@@ -258,6 +280,9 @@ func initPackages() (err error) {
 	}
 	log.Info("Initialising Packages storage with type: %s", setting.Packages.Storage.Type)
 	Packages, err = NewStorage(setting.Packages.Storage.Type, setting.Packages.Storage)
+	if err == nil {
+		Packages = wrapEncryption(Packages)
+	}
 	return err
 }
 
@@ -271,7 +296,11 @@ func initActions() (err error) {
 	if Actions, err = NewStorage(setting.Actions.LogStorage.Type, setting.Actions.LogStorage); err != nil {
 		return err
 	}
+	Actions = wrapEncryption(Actions)
 	log.Info("Initialising ActionsArtifacts storage with type: %s", setting.Actions.ArtifactStorage.Type)
 	ActionsArtifacts, err = NewStorage(setting.Actions.ArtifactStorage.Type, setting.Actions.ArtifactStorage)
+	if err == nil {
+		ActionsArtifacts = wrapEncryption(ActionsArtifacts)
+	}
 	return err
 }

@@ -763,6 +763,11 @@ func registerWebRoutes(m *web.Router, webAuth *AuthMiddleware) {
 			m.Get("/settings", admin.ConfigSettings)
 		})
 
+		m.Group("/encryption", func() {
+			m.Get("", admin.Encryption)
+			m.Post("", admin.EncryptionPost)
+		})
+
 		m.Group("/monitor", func() {
 			m.Get("/stats", admin.MonitorStats)
 			m.Get("/cron", admin.CronTasks)

@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body {
+    width: 420px;
+    padding: 16px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+    font-size: 12px;
+    background: #1e1e1e;
+    color: #d4d4d4;
+    margin: 0;
+  }
+  h2 { margin: 0 0 12px; font-size: 14px; color: #fff; }
+  .row { margin: 6px 0; }
+  .label { color: #569cd6; }
+  .ok { color: #4ec9b0; }
+  .bad { color: #f44747; }
+  .warn { color: #dcdcaa; }
+  .dim { color: #808080; }
+  .hash { word-break: break-all; font-size: 10px; }
+  .status-box {
+    padding: 8px 12px;
+    border-radius: 4px;
+    margin: 8px 0;
+    font-weight: bold;
+    text-align: center;
+    font-size: 13px;
+  }
+  .status-verified { background: #28a745; color: #fff; }
+  .status-tampered { background: #dc3545; color: #fff; }
+  .status-no-e2e { background: #6c757d; color: #fff; }
+  .status-unknown { background: #ffc107; color: #000; }
+  hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
+  .info-box { background: #2d2d2d; border: 1px solid #444; border-radius: 4px; padding: 8px; margin: 8px 0; }
+</style>
+</head>
+<body>
+  <h2>Gitea E2E Encryption Verifier</h2>
+  <div id="content">Checking...</div>
+  <script src="popup.js"></script>
+</body>
+</html>

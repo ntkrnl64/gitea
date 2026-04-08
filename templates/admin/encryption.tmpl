@@ -1,0 +1,134 @@
+{{template "admin/layout_head" (dict "ctxData" . "pageClass" "admin encryption")}}
+<div class="admin-setting-content">
+	<h4 class="ui top attached header">
+		Encryption at Rest
+	</h4>
+	<div class="ui attached segment">
+		<div class="ui grid">
+			<div class="eight wide column">
+				<table class="ui very basic table">
+					<tbody>
+						<tr>
+							<td><strong>Status</strong></td>
+							<td>
+								{{if .EncryptionEnabled}}
+									<span class="ui green label">Enabled</span>
+								{{else}}
+									<span class="ui grey label">Disabled</span>
+								{{end}}
+							</td>
+						</tr>
+						<tr>
+							<td><strong>Algorithm</strong></td>
+							<td>{{.EncryptionAlgorithm}}</td>
+						</tr>
+						<tr>
+							<td><strong>Post-Quantum (ML-KEM-768)</strong></td>
+							<td>
+								{{if .EncryptionPostQuantum}}
+									<span class="ui blue label">Enabled</span>
+								{{else}}
+									<span class="ui grey label">Disabled</span>
+								{{end}}
+							</td>
+						</tr>
+						<tr>
+							<td><strong>Encrypt Storage</strong></td>
+							<td>
+								{{if .EncryptStorage}}
+									<span class="ui green label">Yes</span>
+								{{else}}
+									<span class="ui grey label">No</span>
+								{{end}}
+							</td>
+						</tr>
+						<tr>
+							<td><strong>Encrypt Database Fields</strong></td>
+							<td>
+								{{if .EncryptDatabaseFields}}
+									<span class="ui green label">Yes</span>
+								{{else}}
+									<span class="ui grey label">No</span>
+								{{end}}
+							</td>
+						</tr>
+					</tbody>
+				</table>
+			</div>
+		</div>
+	</div>
+
+	{{if .EncryptionEnabled}}
+	<h4 class="ui attached header">
+		Data Migration
+	</h4>
+	<div class="ui attached segment">
+		<p>
+			{{if .FullyMigrated}}
+				<span class="ui green label">All data has been encrypted</span>
+			{{else}}
+				<span class="ui yellow label">Migration in progress or not started</span>
+			{{end}}
+		</p>
+
+		{{if .MigrationProgress}}
+		<table class="ui very basic table">
+			<thead>
+				<tr>
+					<th>Table/Storage</th>
+					<th>Last Processed ID</th>
+					<th>Status</th>
+				</tr>
+			</thead>
+			<tbody>
+				{{range .MigrationProgress}}
+				<tr>
+					<td>
+						{{if .TableName}}{{.TableName}}{{end}}
+						{{if .StorageName}}{{.StorageName}}{{end}}
+					</td>
+					<td>{{.LastID}}</td>
+					<td>
+						{{if .Completed}}
+							<span class="ui green label">Completed</span>
+						{{else}}
+							<span class="ui yellow label">In Progress</span>
+						{{end}}
+					</td>
+				</tr>
+				{{end}}
+			</tbody>
+		</table>
+		{{end}}
+
+		{{if not .FullyMigrated}}
+		<form method="post" action="{{AppSubUrl}}/-/admin/encryption">
+			{{.CsrfTokenHtml}}
+			<input type="hidden" name="action" value="migrate">
+			<button type="submit" class="ui primary button">
+				Start/Resume Migration
+			</button>
+		</form>
+		{{end}}
+	</div>
+	{{end}}
+
+	<h4 class="ui attached header">
+		Configuration
+	</h4>
+	<div class="ui attached segment">
+		<p>Encryption settings are configured in <code>app.ini</code> under the <code>[encryption]</code> section.</p>
+		<pre><code>[encryption]
+ENABLED = {{if .EncryptionEnabled}}true{{else}}false{{end}}
+ALGORITHM = {{.EncryptionAlgorithm}}
+POST_QUANTUM = {{if .EncryptionPostQuantum}}true{{else}}false{{end}}
+MASTER_KEY = ********
+ENCRYPT_STORAGE = {{if .EncryptStorage}}true{{else}}false{{end}}
+ENCRYPT_DATABASE_FIELDS = {{if .EncryptDatabaseFields}}true{{else}}false{{end}}</code></pre>
+		<p class="tw-mt-4">
+			<strong>Warning:</strong> The master key is critical. If lost, all encrypted data becomes unrecoverable.
+			Use the API endpoint <code>POST /api/v1/admin/encryption/backup-key</code> to create a hybrid-encrypted backup.
+		</p>
+	</div>
+</div>
+{{template "admin/layout_footer" .}}

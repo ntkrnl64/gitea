@@ -21,6 +21,7 @@ import (
 	"code.gitea.io/gitea/models/unit"
 	user_model "code.gitea.io/gitea/models/user"
 	"code.gitea.io/gitea/modules/base"
+	"code.gitea.io/gitea/modules/encryption"
 	"code.gitea.io/gitea/modules/git"
 	giturl "code.gitea.io/gitea/modules/git/url"
 	"code.gitea.io/gitea/modules/httplib"
@@ -325,6 +326,27 @@ func (repo *Repository) AfterLoad() {
 	repo.NumOpenActionRuns = repo.NumActionRuns - repo.NumClosedActionRuns
 	if repo.DefaultWikiBranch == "" {
 		repo.DefaultWikiBranch = setting.Repository.DefaultBranch
+	}
+	repo.Description = encryption.MaybeDecryptField(repo.Description)
+}
+
+// BeforeInsert encrypts fields before inserting into the database.
+func (repo *Repository) BeforeInsert() {
+	if setting.Encryption.Enabled && setting.Encryption.EncryptDatabaseFields {
+		scope := encryption.KeyScope{RepoID: repo.ID}
+		if encrypted, err := encryption.EncryptField(repo.Description, scope); err == nil {
+			repo.Description = encrypted
+		}
+	}
+}
+
+// BeforeUpdate encrypts fields before updating in the database.
+func (repo *Repository) BeforeUpdate() {
+	if setting.Encryption.Enabled && setting.Encryption.EncryptDatabaseFields {
+		scope := encryption.KeyScope{RepoID: repo.ID}
+		if encrypted, err := encryption.EncryptField(repo.Description, scope); err == nil {
+			repo.Description = encrypted
+		}
 	}
 }
 

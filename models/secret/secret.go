@@ -11,6 +11,7 @@ import (
 	actions_model "code.gitea.io/gitea/models/actions"
 	"code.gitea.io/gitea/models/db"
 	actions_module "code.gitea.io/gitea/modules/actions"
+	"code.gitea.io/gitea/modules/encryption"
 	"code.gitea.io/gitea/modules/log"
 	secret_module "code.gitea.io/gitea/modules/secret"
 	"code.gitea.io/gitea/modules/setting"
@@ -79,7 +80,7 @@ func InsertEncryptedSecret(ctx context.Context, ownerID, repoID int64, name, dat
 
 	description = util.TruncateRunes(description, SecretDescriptionMaxLength)
 
-	encrypted, err := secret_module.EncryptSecret(setting.SecretKey, data)
+	encrypted, err := encryptSecretData(data, ownerID, repoID)
 	if err != nil {
 		return nil, err
 	}
@@ -92,6 +93,30 @@ func InsertEncryptedSecret(ctx context.Context, ownerID, repoID int64, name, dat
 		Description: description,
 	}
 	return secret, db.Insert(ctx, secret)
+}
+
+// encryptSecretData encrypts secret data using new encryption if available, otherwise falls back to legacy.
+func encryptSecretData(data string, ownerID, repoID int64) (string, error) {
+	if setting.Encryption.Enabled && setting.Encryption.EncryptDatabaseFields {
+		scope := encryption.KeyScope{OrgID: ownerID, RepoID: repoID}
+		return encryption.EncryptField(data, scope)
+	}
+	return secret_module.EncryptSecret(setting.SecretKey, data)
+}
+
+// decryptSecretData decrypts secret data, handling both new and legacy formats.
+func decryptSecretData(id int64, name, data string) (string, error) {
+	// Try new encryption format first
+	if encryption.IsEncryptedField(data) {
+		return encryption.DecryptField(data)
+	}
+	// Fall back to legacy AES-CFB format
+	v, err := secret_module.DecryptSecret(setting.SecretKey, data)
+	if err != nil {
+		log.Error("Unable to decrypt Actions secret %v %q, maybe SECRET_KEY is wrong: %v", id, name, err)
+		return "", err
+	}
+	return v, nil
 }
 
 func init() {
@@ -127,7 +152,7 @@ func (opts FindSecretsOptions) ToConds() builder.Cond {
 	return cond
 }
 
-// UpdateSecret changes org or user reop secret.
+// UpdateSecret changes org or user repo secret.
 func UpdateSecret(ctx context.Context, secretID int64, data, description string) error {
 	if len(data) > SecretDataMaxLength {
 		return util.NewInvalidArgumentErrorf("data too long")
@@ -135,7 +160,17 @@ func UpdateSecret(ctx context.Context, secretID int64, data, description string)
 
 	description = util.TruncateRunes(description, SecretDescriptionMaxLength)
 
-	encrypted, err := secret_module.EncryptSecret(setting.SecretKey, data)
+	// Look up existing secret to determine scope for encryption
+	existing := &Secret{}
+	has, err := db.GetEngine(ctx).ID(secretID).Get(existing)
+	if err != nil {
+		return err
+	}
+	if !has {
+		return ErrSecretNotFound{}
+	}
+
+	encrypted, err := encryptSecretData(data, existing.OwnerID, existing.RepoID)
 	if err != nil {
 		return err
 	}
@@ -175,13 +210,12 @@ func GetSecretsOfTask(ctx context.Context, task *actions_model.ActionTask) (map[
 		return nil, err
 	}
 
-	for _, secret := range append(ownerSecrets, repoSecrets...) {
-		v, err := secret_module.DecryptSecret(setting.SecretKey, secret.Data)
+	for _, s := range append(ownerSecrets, repoSecrets...) {
+		v, err := decryptSecretData(s.ID, s.Name, s.Data)
 		if err != nil {
-			log.Error("Unable to decrypt Actions secret %v %q, maybe SECRET_KEY is wrong: %v", secret.ID, secret.Name, err)
 			continue
 		}
-		secrets[secret.Name] = v
+		secrets[s.Name] = v
 	}
 
 	return secrets, nil

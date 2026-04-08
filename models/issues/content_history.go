@@ -9,7 +9,9 @@ import (
 
 	"code.gitea.io/gitea/models/avatars"
 	"code.gitea.io/gitea/models/db"
+	"code.gitea.io/gitea/modules/encryption"
 	"code.gitea.io/gitea/modules/log"
+	"code.gitea.io/gitea/modules/setting"
 	"code.gitea.io/gitea/modules/timeutil"
 	"code.gitea.io/gitea/modules/util"
 
@@ -31,6 +33,21 @@ type ContentHistory struct {
 // TableName provides the real table name
 func (m *ContentHistory) TableName() string {
 	return "issue_content_history"
+}
+
+// AfterLoad decrypts encrypted fields after loading from the database.
+func (m *ContentHistory) AfterLoad() {
+	m.ContentText = encryption.MaybeDecryptField(m.ContentText)
+}
+
+// BeforeInsert encrypts fields before inserting into the database.
+func (m *ContentHistory) BeforeInsert() {
+	if setting.Encryption.Enabled && setting.Encryption.EncryptDatabaseFields {
+		scope := encryption.KeyScope{RepoID: m.IssueID}
+		if encrypted, err := encryption.EncryptField(m.ContentText, scope); err == nil {
+			m.ContentText = encrypted
+		}
+	}
 }
 
 func init() {

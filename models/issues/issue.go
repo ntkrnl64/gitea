@@ -17,6 +17,7 @@ import (
 	repo_model "code.gitea.io/gitea/models/repo"
 	user_model "code.gitea.io/gitea/models/user"
 	"code.gitea.io/gitea/modules/container"
+	"code.gitea.io/gitea/modules/encryption"
 	"code.gitea.io/gitea/modules/log"
 	"code.gitea.io/gitea/modules/optional"
 	"code.gitea.io/gitea/modules/setting"
@@ -122,6 +123,38 @@ type Issue struct {
 
 	// Time estimate
 	TimeEstimate int64 `xorm:"NOT NULL DEFAULT 0"`
+}
+
+// AfterLoad decrypts encrypted fields after loading from the database.
+func (issue *Issue) AfterLoad() {
+	issue.Title = encryption.MaybeDecryptField(issue.Title)
+	issue.Content = encryption.MaybeDecryptField(issue.Content)
+}
+
+// BeforeInsert encrypts fields before inserting into the database.
+func (issue *Issue) BeforeInsert() {
+	if setting.Encryption.Enabled && setting.Encryption.EncryptDatabaseFields {
+		scope := encryption.KeyScope{RepoID: issue.RepoID}
+		if encrypted, err := encryption.EncryptField(issue.Title, scope); err == nil {
+			issue.Title = encrypted
+		}
+		if encrypted, err := encryption.EncryptField(issue.Content, scope); err == nil {
+			issue.Content = encrypted
+		}
+	}
+}
+
+// BeforeUpdate encrypts fields before updating in the database.
+func (issue *Issue) BeforeUpdate() {
+	if setting.Encryption.Enabled && setting.Encryption.EncryptDatabaseFields {
+		scope := encryption.KeyScope{RepoID: issue.RepoID}
+		if encrypted, err := encryption.EncryptField(issue.Title, scope); err == nil {
+			issue.Title = encrypted
+		}
+		if encrypted, err := encryption.EncryptField(issue.Content, scope); err == nil {
+			issue.Content = encrypted
+		}
+	}
 }
 
 var (

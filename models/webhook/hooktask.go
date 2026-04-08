@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"code.gitea.io/gitea/models/db"
+	"code.gitea.io/gitea/modules/encryption"
 	"code.gitea.io/gitea/modules/json"
 	"code.gitea.io/gitea/modules/log"
 	"code.gitea.io/gitea/modules/setting"
@@ -77,10 +78,36 @@ func (t *HookTask) BeforeUpdate() {
 	if t.ResponseInfo != nil {
 		t.ResponseContent = t.simpleMarshalJSON(t.ResponseInfo)
 	}
+	if setting.Encryption.Enabled && setting.Encryption.EncryptDatabaseFields {
+		scope := encryption.InstanceScope()
+		if encrypted, err := encryption.EncryptField(t.PayloadContent, scope); err == nil {
+			t.PayloadContent = encrypted
+		}
+		if encrypted, err := encryption.EncryptField(t.RequestContent, scope); err == nil {
+			t.RequestContent = encrypted
+		}
+		if encrypted, err := encryption.EncryptField(t.ResponseContent, scope); err == nil {
+			t.ResponseContent = encrypted
+		}
+	}
+}
+
+// BeforeInsert encrypts fields before inserting into the database.
+func (t *HookTask) BeforeInsert() {
+	if setting.Encryption.Enabled && setting.Encryption.EncryptDatabaseFields {
+		scope := encryption.InstanceScope()
+		if encrypted, err := encryption.EncryptField(t.PayloadContent, scope); err == nil {
+			t.PayloadContent = encrypted
+		}
+	}
 }
 
 // AfterLoad updates the webhook object upon setting a column
 func (t *HookTask) AfterLoad() {
+	t.PayloadContent = encryption.MaybeDecryptField(t.PayloadContent)
+	t.RequestContent = encryption.MaybeDecryptField(t.RequestContent)
+	t.ResponseContent = encryption.MaybeDecryptField(t.ResponseContent)
+
 	if len(t.RequestContent) == 0 {
 		return
 	}
