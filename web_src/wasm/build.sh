@@ -11,8 +11,7 @@ echo "Building gitea-crypto WASM module..."
 cd "$CRATE_DIR"
 
 # Build with wasm-pack for web target
-RUSTFLAGS="-C target-feature=+bulk-memory" \
-  wasm-pack build --target web --release --out-dir "../../../$OUT_DIR"
+wasm-pack build --target web --release --out-dir "../../../$OUT_DIR"
 
 cd "../../.."
 

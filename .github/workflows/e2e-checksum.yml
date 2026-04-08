@@ -34,8 +34,7 @@ jobs:
       - name: Build WASM module
         run: |
           cd web_src/wasm/gitea-crypto
-          RUSTFLAGS="-C target-feature=+bulk-memory" \
-            wasm-pack build --target web --release --out-dir ../../../public/assets/wasm
+          wasm-pack build --target web --release --out-dir ../../../public/assets/wasm
 
       - name: Compute checksums
         id: checksums
