@@ -1,44 +1,16 @@
 // Client-side E2E encryption module for Gitea.
-// All encryption and decryption happens in the browser.
-// Uses HYBRID post-quantum cryptography: X25519 + ML-KEM-768.
+// All encryption and decryption happens in the browser using Web Crypto API.
 // The server NEVER sees plaintext content or private keys.
-
-import init, {
-  mlkem768_keygen, mlkem768_dk_size, mlkem768_ek_size,
-  mlkem768_encapsulate, mlkem768_decapsulate,
-  derive_hybrid_key, aes256gcm_encrypt, aes256gcm_decrypt,
-} from '../../../public/assets/wasm/gitea_crypto.js';
 
 const E2E_PREFIX = 'e2e:v1:';
 const KDF_ITERATIONS_DEFAULT = 600000;
-const REPO_KEY_LENGTH = 32; // 256-bit AES key
+const REPO_KEY_LENGTH = 32;
 
-let wasmInitialized = false;
-let wasmInitPromise: Promise<void> | null = null;
-
-// Initialize the WASM module lazily. Only loads the 64KB WASM binary
-// when crypto operations are actually needed (not on every page load).
-export async function initCrypto(): Promise<void> {
-  if (wasmInitialized) return;
-  if (!wasmInitPromise) {
-    wasmInitPromise = init().then(() => { wasmInitialized = true; });
-  }
-  await wasmInitPromise;
-}
-
-// Zero out a Uint8Array to prevent sensitive data from lingering in memory.
-// Called after private keys, repo keys, and shared secrets are no longer needed.
-export function zeroMemory(data: Uint8Array): void {
-  crypto.getRandomValues(data); // overwrite with random first
-  data.fill(0);                 // then zero
-}
-
-// Check if content is E2E encrypted
 export function isE2EEncrypted(content: string): boolean {
   return content.startsWith(E2E_PREFIX);
 }
 
-// --- Key Derivation (passphrase → AES key for private key encryption) ---
+// --- Key Derivation (passphrase -> key) ---
 
 export async function deriveKeyFromPassphrase(
   passphrase: string,
@@ -53,110 +25,53 @@ export async function deriveKeyFromPassphrase(
     {name: 'PBKDF2', salt, iterations, hash: 'SHA-256'},
     keyMaterial,
     {name: 'AES-GCM', length: 256},
-    true, // extractable to get raw bytes
+    false,
     ['encrypt', 'decrypt'],
   );
 }
 
-// --- Passphrase-based AES-GCM (for encrypting the private key bundle) ---
+// --- AES-256-GCM encrypt/decrypt ---
 
-async function passphraseEncrypt(key: CryptoKey, plaintext: Uint8Array): Promise<Uint8Array> {
+async function aesGcmEncrypt(key: CryptoKey, plaintext: Uint8Array): Promise<Uint8Array> {
   const nonce = crypto.getRandomValues(new Uint8Array(12));
-  const ct = new Uint8Array(await crypto.subtle.encrypt(
+  const ciphertext = new Uint8Array(await crypto.subtle.encrypt(
     {name: 'AES-GCM', iv: nonce}, key, plaintext,
   ));
-  const result = new Uint8Array(nonce.length + ct.length);
+  const result = new Uint8Array(nonce.length + ciphertext.length);
   result.set(nonce);
-  result.set(ct, nonce.length);
+  result.set(ciphertext, nonce.length);
   return result;
 }
 
-async function passphraseDecrypt(key: CryptoKey, data: Uint8Array): Promise<Uint8Array> {
+async function aesGcmDecrypt(key: CryptoKey, data: Uint8Array): Promise<Uint8Array> {
   const nonce = data.slice(0, 12);
-  const ct = data.slice(12);
+  const ciphertext = data.slice(12);
   return new Uint8Array(await crypto.subtle.decrypt(
-    {name: 'AES-GCM', iv: nonce}, key, ct,
+    {name: 'AES-GCM', iv: nonce}, key, ciphertext,
   ));
 }
 
-// --- Hybrid Key Pair: X25519 + ML-KEM-768 ---
+// --- X25519 ECDH key pair generation ---
 
-export interface HybridKeyPair {
-  x25519PublicKey: Uint8Array;   // 32 bytes
-  x25519PrivateKey: Uint8Array;  // PKCS8 encoded
-  mlkemPublicKey: Uint8Array;    // 1184 bytes (encapsulation key)
-  mlkemPrivateKey: Uint8Array;   // 2400 bytes (decapsulation key)
-}
-
-export async function generateHybridKeyPair(): Promise<HybridKeyPair> {
-  await initCrypto();
-
-  // Generate X25519 key pair (Web Crypto)
-  const x25519Pair = await crypto.subtle.generateKey(
-    {name: 'X25519'} as any, true, ['deriveKey', 'deriveBits'],
+export async function generateUserKeyPair(): Promise<{publicKey: Uint8Array, privateKey: Uint8Array}> {
+  const keyPair = await crypto.subtle.generateKey(
+    {name: 'X25519'} as EcKeyGenParams,
+    true,
+    ['deriveBits'],
   );
-  const x25519Pub = new Uint8Array(await crypto.subtle.exportKey('raw', x25519Pair.publicKey));
-  const x25519Priv = new Uint8Array(await crypto.subtle.exportKey('pkcs8', x25519Pair.privateKey));
-
-  // Generate ML-KEM-768 key pair (Rust WASM)
-  const mlkemKeys = mlkem768_keygen();
-  const dkSize = mlkem768_dk_size();
-  const mlkemPriv = mlkemKeys.slice(0, dkSize);
-  const mlkemPub = mlkemKeys.slice(dkSize);
-
-  return {
-    x25519PublicKey: x25519Pub,
-    x25519PrivateKey: x25519Priv,
-    mlkemPublicKey: mlkemPub,
-    mlkemPrivateKey: mlkemPriv,
-  };
+  const publicKey = new Uint8Array(await crypto.subtle.exportKey('raw', keyPair.publicKey));
+  const privateKey = new Uint8Array(await crypto.subtle.exportKey('pkcs8', keyPair.privateKey));
+  return {publicKey, privateKey};
 }
 
-// Bundle private keys for storage (encrypted with passphrase)
-function bundlePrivateKeys(kp: HybridKeyPair): Uint8Array {
-  // Format: [4-byte x25519 len][x25519 priv][mlkem priv]
-  const x25519Len = kp.x25519PrivateKey.length;
-  const bundle = new Uint8Array(4 + x25519Len + kp.mlkemPrivateKey.length);
-  new DataView(bundle.buffer).setUint32(0, x25519Len);
-  bundle.set(kp.x25519PrivateKey, 4);
-  bundle.set(kp.mlkemPrivateKey, 4 + x25519Len);
-  return bundle;
-}
-
-function unbundlePrivateKeys(bundle: Uint8Array): {x25519: Uint8Array; mlkem: Uint8Array} {
-  const x25519Len = new DataView(bundle.buffer, bundle.byteOffset).getUint32(0);
-  return {
-    x25519: bundle.slice(4, 4 + x25519Len),
-    mlkem: bundle.slice(4 + x25519Len),
-  };
-}
-
-// Bundle public keys for storage
-export function bundlePublicKeys(x25519Pub: Uint8Array, mlkemPub: Uint8Array): Uint8Array {
-  // Format: [32-byte x25519][1184-byte mlkem]
-  const bundle = new Uint8Array(x25519Pub.length + mlkemPub.length);
-  bundle.set(x25519Pub);
-  bundle.set(mlkemPub, x25519Pub.length);
-  return bundle;
-}
-
-export function unbundlePublicKeys(bundle: Uint8Array): {x25519: Uint8Array; mlkem: Uint8Array} {
-  return {
-    x25519: bundle.slice(0, 32),
-    mlkem: bundle.slice(32),
-  };
-}
-
-// Encrypt private key bundle with passphrase
-export async function encryptPrivateKeys(
-  kp: HybridKeyPair,
+export async function encryptPrivateKey(
+  privateKey: Uint8Array,
   passphrase: string,
-): Promise<{encrypted: string; salt: string; iterations: number}> {
+): Promise<{encrypted: string, salt: string, iterations: number}> {
   const salt = crypto.getRandomValues(new Uint8Array(32));
   const iterations = KDF_ITERATIONS_DEFAULT;
   const aesKey = await deriveKeyFromPassphrase(passphrase, salt, iterations);
-  const bundle = bundlePrivateKeys(kp);
-  const encrypted = await passphraseEncrypt(aesKey, bundle);
+  const encrypted = await aesGcmEncrypt(aesKey, privateKey);
   return {
     encrypted: uint8ToBase64(encrypted),
     salt: uint8ToBase64(salt),
@@ -164,123 +79,107 @@ export async function encryptPrivateKeys(
   };
 }
 
-// Decrypt private key bundle with passphrase
-export async function decryptPrivateKeys(
+export async function decryptPrivateKey(
   encryptedBase64: string,
   saltBase64: string,
   iterations: number,
   passphrase: string,
-): Promise<{x25519: Uint8Array; mlkem: Uint8Array}> {
+): Promise<Uint8Array> {
   const salt = base64ToUint8(saltBase64);
   const aesKey = await deriveKeyFromPassphrase(passphrase, salt, iterations);
   const encrypted = base64ToUint8(encryptedBase64);
-  const bundle = await passphraseDecrypt(aesKey, encrypted);
-  return unbundlePrivateKeys(bundle);
+  return aesGcmDecrypt(aesKey, encrypted);
 }
 
-// --- Repo key: generate ---
+// --- Repo key management ---
 
 export function generateRepoKey(): Uint8Array {
   return crypto.getRandomValues(new Uint8Array(REPO_KEY_LENGTH));
 }
 
-// --- Hybrid repo key encryption (X25519 + ML-KEM-768) ---
-
-// Encrypt a repo key for a recipient using hybrid key exchange.
-// Both X25519 ECDH AND ML-KEM-768 KEM contribute to the wrapping key.
-// Even if one is broken (e.g. X25519 by quantum computer), the other protects.
-export async function encryptRepoKeyHybrid(
+export async function encryptRepoKeyForUser(
   repoKey: Uint8Array,
-  recipientPubBundle: Uint8Array, // bundled: [32-byte x25519][1184-byte mlkem]
-  senderX25519PrivPkcs8: Uint8Array,
+  recipientPublicKeyRaw: Uint8Array,
+  senderPrivateKeyPkcs8: Uint8Array,
 ): Promise<string> {
-  await initCrypto();
-
-  const {x25519: recipientX25519Pub, mlkem: recipientMlkemPub} = unbundlePublicKeys(recipientPubBundle);
-
-  // 1. X25519 ECDH shared secret
-  const recipientKey = await crypto.subtle.importKey(
-    'raw', recipientX25519Pub, {name: 'X25519'} as any, false, [],
+  const recipientPub = await crypto.subtle.importKey(
+    'raw', recipientPublicKeyRaw, {name: 'X25519'} as EcKeyImportParams, false, [],
   );
   const senderPriv = await crypto.subtle.importKey(
-    'pkcs8', senderX25519PrivPkcs8, {name: 'X25519'} as any, false, ['deriveBits'],
+    'pkcs8', senderPrivateKeyPkcs8, {name: 'X25519'} as EcKeyImportParams, false, ['deriveBits'],
   );
-  const x25519SS = new Uint8Array(await crypto.subtle.deriveBits(
-    {name: 'X25519', public: recipientKey} as any, senderPriv, 256,
+  const sharedBits = new Uint8Array(await crypto.subtle.deriveBits(
+    {name: 'X25519', public: recipientPub} as EcdhKeyDeriveParams, senderPriv, 256,
   ));
-
-  // 2. ML-KEM-768 encapsulation (via Rust WASM)
-  const mlkemResult = mlkem768_encapsulate(recipientMlkemPub);
-  const mlkemSS = mlkemResult.slice(0, 32);
-  const mlkemCT = mlkemResult.slice(32);
-
-  // 3. Derive hybrid wrapping key (via Rust WASM HKDF)
-  const wrappingKey = derive_hybrid_key(x25519SS, mlkemSS);
-
-  // 4. Wrap repo key with AES-256-GCM (via Rust WASM)
-  const wrappedRepoKey = aes256gcm_encrypt(wrappingKey, repoKey);
-
-  // 5. Get sender's X25519 public key for inclusion
-  const senderPubJwk = await crypto.subtle.exportKey('jwk',
-    (await crypto.subtle.importKey('pkcs8', senderX25519PrivPkcs8, {name: 'X25519'} as any, true, ['deriveBits'])),
+  const sharedKeyMaterial = await crypto.subtle.importKey(
+    'raw', sharedBits, 'HKDF', false, ['deriveKey'],
   );
-  const senderX25519Pub = base64UrlToUint8(senderPubJwk.x!);
-
-  // Output: [32-byte sender X25519 pub][mlkem ciphertext][wrapped repo key]
-  const result = new Uint8Array(32 + mlkemCT.length + wrappedRepoKey.length);
-  result.set(senderX25519Pub, 0);
-  result.set(mlkemCT, 32);
-  result.set(wrappedRepoKey, 32 + mlkemCT.length);
+  const wrappingKey = await crypto.subtle.deriveKey(
+    {name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(0), info: new TextEncoder().encode('gitea-e2e-repo-key')},
+    sharedKeyMaterial,
+    {name: 'AES-GCM', length: 256},
+    false,
+    ['encrypt'],
+  );
+  const encrypted = await aesGcmEncrypt(wrappingKey, repoKey);
+  const senderPubKey = await getSenderPublicKey(senderPrivateKeyPkcs8);
+  const result = new Uint8Array(senderPubKey.length + encrypted.length);
+  result.set(senderPubKey);
+  result.set(encrypted, senderPubKey.length);
   return uint8ToBase64(result);
 }
 
-// Decrypt a repo key using hybrid key exchange.
-export async function decryptRepoKeyHybrid(
+export async function decryptRepoKey(
   encryptedBase64: string,
-  recipientX25519PrivPkcs8: Uint8Array,
-  recipientMlkemPriv: Uint8Array,
+  recipientPrivateKeyPkcs8: Uint8Array,
 ): Promise<Uint8Array> {
-  await initCrypto();
-
   const data = base64ToUint8(encryptedBase64);
-  const ctSize = 1088; // ML-KEM-768 ciphertext size
+  const senderPubRaw = data.slice(0, 32);
+  const encrypted = data.slice(32);
 
-  const senderX25519Pub = data.slice(0, 32);
-  const mlkemCT = data.slice(32, 32 + ctSize);
-  const wrappedRepoKey = data.slice(32 + ctSize);
-
-  // 1. X25519 ECDH shared secret
   const senderPub = await crypto.subtle.importKey(
-    'raw', senderX25519Pub, {name: 'X25519'} as any, false, [],
+    'raw', senderPubRaw, {name: 'X25519'} as EcKeyImportParams, false, [],
   );
   const recipientPriv = await crypto.subtle.importKey(
-    'pkcs8', recipientX25519PrivPkcs8, {name: 'X25519'} as any, false, ['deriveBits'],
+    'pkcs8', recipientPrivateKeyPkcs8, {name: 'X25519'} as EcKeyImportParams, false, ['deriveBits'],
   );
-  const x25519SS = new Uint8Array(await crypto.subtle.deriveBits(
-    {name: 'X25519', public: senderPub} as any, recipientPriv, 256,
+  const sharedBits = new Uint8Array(await crypto.subtle.deriveBits(
+    {name: 'X25519', public: senderPub} as EcdhKeyDeriveParams, recipientPriv, 256,
   ));
-
-  // 2. ML-KEM-768 decapsulation (via Rust WASM)
-  const mlkemSS = mlkem768_decapsulate(recipientMlkemPriv, mlkemCT);
-
-  // 3. Derive hybrid wrapping key
-  const wrappingKey = derive_hybrid_key(x25519SS, new Uint8Array(mlkemSS));
-
-  // 4. Unwrap repo key
-  return new Uint8Array(aes256gcm_decrypt(wrappingKey, wrappedRepoKey));
+  const sharedKeyMaterial = await crypto.subtle.importKey(
+    'raw', sharedBits, 'HKDF', false, ['deriveKey'],
+  );
+  const wrappingKey = await crypto.subtle.deriveKey(
+    {name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(0), info: new TextEncoder().encode('gitea-e2e-repo-key')},
+    sharedKeyMaterial,
+    {name: 'AES-GCM', length: 256},
+    false,
+    ['decrypt'],
+  );
+  return aesGcmDecrypt(wrappingKey, encrypted);
 }
 
-// --- Content encryption/decryption (AES-256-GCM via WASM) ---
+async function getSenderPublicKey(privateKeyPkcs8: Uint8Array): Promise<Uint8Array> {
+  const privKey = await crypto.subtle.importKey(
+    'pkcs8', privateKeyPkcs8, {name: 'X25519'} as EcKeyImportParams, true, ['deriveBits'],
+  );
+  const jwk = await crypto.subtle.exportKey('jwk', privKey);
+  return base64UrlToUint8(jwk.x!);
+}
+
+// --- Content encryption/decryption ---
 
 export async function encryptContent(
   content: string,
   repoKey: Uint8Array,
 ): Promise<string> {
   if (!content) return content;
-  await initCrypto();
+  const aesKey = await crypto.subtle.importKey(
+    'raw', repoKey, {name: 'AES-GCM', length: 256}, false, ['encrypt'],
+  );
   const plaintext = new TextEncoder().encode(content);
-  const encrypted = aes256gcm_encrypt(repoKey, plaintext);
-  return E2E_PREFIX + uint8ToBase64(new Uint8Array(encrypted));
+  const encrypted = await aesGcmEncrypt(aesKey, plaintext);
+  return E2E_PREFIX + uint8ToBase64(encrypted);
 }
 
 export async function decryptContent(
@@ -288,19 +187,27 @@ export async function decryptContent(
   repoKey: Uint8Array,
 ): Promise<string> {
   if (!content || !isE2EEncrypted(content)) return content;
-  await initCrypto();
   const payload = content.slice(E2E_PREFIX.length);
+  const aesKey = await crypto.subtle.importKey(
+    'raw', repoKey, {name: 'AES-GCM', length: 256}, false, ['decrypt'],
+  );
   const encrypted = base64ToUint8(payload);
-  const decrypted = aes256gcm_decrypt(repoKey, encrypted);
-  return new TextDecoder().decode(new Uint8Array(decrypted));
+  const decrypted = await aesGcmDecrypt(aesKey, encrypted);
+  return new TextDecoder().decode(decrypted);
+}
+
+// Zero out a Uint8Array to prevent sensitive data from lingering in memory.
+export function zeroMemory(data: Uint8Array): void {
+  crypto.getRandomValues(data);
+  data.fill(0);
 }
 
 // --- Base64 utilities ---
 
 export function uint8ToBase64(data: Uint8Array): string {
   let binary = '';
-  for (let i = 0; i < data.length; i++) {
-    binary += String.fromCharCode(data[i]);
+  for (const byte of data) {
+    binary += String.fromCharCode(byte);
   }
   return btoa(binary);
 }

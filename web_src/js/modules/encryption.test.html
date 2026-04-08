@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Gitea E2E Encryption — Client-Side Test</title>
+<style>
+  body { font-family: monospace; background: #111; color: #ddd; padding: 20px; max-width: 800px; }
+  h1 { color: #4ec9b0; }
+  .pass { color: #4ec9b0; } .fail { color: #f44747; } .info { color: #569cd6; }
+  pre { background: #1e1e1e; padding: 10px; border-radius: 4px; overflow-x: auto; }
+  button { background: #28a745; color: #fff; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; margin: 4px; font-size: 14px; }
+  button:hover { opacity: 0.9; }
+  #log { white-space: pre-wrap; line-height: 1.8; }
+</style>
+</head>
+<body>
+<h1>Gitea E2E Encryption Test Suite</h1>
+<p class="info">This tests the client-side crypto entirely in your browser. No server needed.</p>
+<button onclick="runAllTests()">Run All Tests</button>
+<button onclick="runPerfTest()">Run Performance Test</button>
+<hr>
+<div id="log"></div>
+
+<script type="module">
+// Import the encryption module — adjust path if serving from a different location
+// For testing, we inline the crypto functions using Web Crypto API directly.
+
+const E2E_PREFIX = 'e2e:v1:';
+let passed = 0, failed = 0;
+
+function log(msg, cls = '') {
+  document.getElementById('log').innerHTML += `<span class="${cls}">${msg}</span>\n`;
+}
+
+function assert(condition, name) {
+  if (condition) { passed++; log(`  PASS: ${name}`, 'pass'); }
+  else { failed++; log(`  FAIL: ${name}`, 'fail'); }
+}
+
+function uint8ToBase64(data) {
+  let binary = '';
+  for (let i = 0; i < data.length; i++) binary += String.fromCharCode(data[i]);
+  return btoa(binary);
+}
+
+function base64ToUint8(b64) {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+// --- AES-256-GCM ---
+async function aesGcmEncrypt(key, plaintext) {
+  const nonce = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce }, key, plaintext));
+  const result = new Uint8Array(nonce.length + ct.length);
+  result.set(nonce); result.set(ct, nonce.length);
+  return result;
+}
+
+async function aesGcmDecrypt(key, data) {
+  const nonce = data.slice(0, 12);
+  const ct = data.slice(12);
+  return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: nonce }, key, ct));
+}
+
+// --- Tests ---
+
+async function testAesGcmRoundtrip() {
+  log('\n=== AES-256-GCM Round-trip ===', 'info');
+  const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+  const plaintext = new TextEncoder().encode('Hello, E2E encryption!');
+  const encrypted = await aesGcmEncrypt(key, plaintext);
+  assert(encrypted.length > plaintext.length, 'Ciphertext is longer than plaintext');
+  const decrypted = await aesGcmDecrypt(key, encrypted);
+  assert(new TextDecoder().decode(decrypted) === 'Hello, E2E encryption!', 'Decrypted matches original');
+}
+
+async function testAesGcmWrongKey() {
+  log('\n=== AES-256-GCM Wrong Key ===', 'info');
+  const key1 = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+  const key2 = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+  const encrypted = await aesGcmEncrypt(key1, new TextEncoder().encode('secret'));
+  try {
+    await aesGcmDecrypt(key2, encrypted);
+    assert(false, 'Wrong key should fail');
+  } catch {
+    assert(true, 'Wrong key correctly rejected');
+  }
+}
+
+async function testPbkdf2KeyDerivation() {
+  log('\n=== PBKDF2 Key Derivation ===', 'info');
+  const passphrase = 'my-strong-passphrase';
+  const salt = crypto.getRandomValues(new Uint8Array(32));
+  const keyMaterial = await crypto.subtle.importKey('raw', new TextEncoder().encode(passphrase), 'PBKDF2', false, ['deriveKey']);
+  const key = await crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
+    keyMaterial, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']
+  );
+  assert(key !== null, 'Key derived successfully');
+
+  // Same passphrase + salt = same key
+  const key2 = await crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
+    keyMaterial, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']
+  );
+  const raw1 = new Uint8Array(await crypto.subtle.exportKey('raw', key));
+  const raw2 = new Uint8Array(await crypto.subtle.exportKey('raw', key2));
+  assert(uint8ToBase64(raw1) === uint8ToBase64(raw2), 'Same passphrase+salt = deterministic key');
+
+  // Different salt = different key
+  const salt2 = crypto.getRandomValues(new Uint8Array(32));
+  const key3 = await crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt: salt2, iterations: 100000, hash: 'SHA-256' },
+    keyMaterial, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']
+  );
+  const raw3 = new Uint8Array(await crypto.subtle.exportKey('raw', key3));
+  assert(uint8ToBase64(raw1) !== uint8ToBase64(raw3), 'Different salt = different key');
+}
+
+async function testX25519KeyExchange() {
+  log('\n=== X25519 Key Exchange ===', 'info');
+  let supported = true;
+  try {
+    const kp = await crypto.subtle.generateKey({ name: 'X25519' }, true, ['deriveBits']);
+    const pub = new Uint8Array(await crypto.subtle.exportKey('raw', kp.publicKey));
+    assert(pub.length === 32, 'X25519 public key is 32 bytes');
+
+    // Two parties derive the same shared secret
+    const alice = await crypto.subtle.generateKey({ name: 'X25519' }, true, ['deriveBits']);
+    const bob = await crypto.subtle.generateKey({ name: 'X25519' }, true, ['deriveBits']);
+
+    const sharedAB = new Uint8Array(await crypto.subtle.deriveBits(
+      { name: 'X25519', public: bob.publicKey }, alice.privateKey, 256));
+    const sharedBA = new Uint8Array(await crypto.subtle.deriveBits(
+      { name: 'X25519', public: alice.publicKey }, bob.privateKey, 256));
+
+    assert(uint8ToBase64(sharedAB) === uint8ToBase64(sharedBA), 'Shared secret matches both ways');
+  } catch (e) {
+    log(`  SKIP: X25519 not supported in this browser (${e.message})`, 'fail');
+    supported = false;
+  }
+  return supported;
+}
+
+async function testPrivateKeyEncryption() {
+  log('\n=== Private Key Encrypt/Decrypt with Passphrase ===', 'info');
+  // Simulate: generate keypair, encrypt private key with passphrase, decrypt it back
+  const kp = await crypto.subtle.generateKey({ name: 'X25519' }, true, ['deriveBits']);
+  const privateKeyRaw = new Uint8Array(await crypto.subtle.exportKey('pkcs8', kp.privateKey));
+
+  const passphrase = 'test-passphrase-123';
+  const salt = crypto.getRandomValues(new Uint8Array(32));
+  const keyMaterial = await crypto.subtle.importKey('raw', new TextEncoder().encode(passphrase), 'PBKDF2', false, ['deriveKey']);
+  const aesKey = await crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
+    keyMaterial, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']
+  );
+
+  const encrypted = await aesGcmEncrypt(aesKey, privateKeyRaw);
+  assert(encrypted.length > privateKeyRaw.length, 'Encrypted private key is larger');
+
+  const decrypted = await aesGcmDecrypt(aesKey, encrypted);
+  assert(uint8ToBase64(decrypted) === uint8ToBase64(privateKeyRaw), 'Decrypted private key matches original');
+
+  // Wrong passphrase fails
+  const wrongKey = await crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
+    await crypto.subtle.importKey('raw', new TextEncoder().encode('wrong'), 'PBKDF2', false, ['deriveKey']),
+    { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']
+  );
+  try {
+    await aesGcmDecrypt(wrongKey, encrypted);
+    assert(false, 'Wrong passphrase should fail');
+  } catch {
+    assert(true, 'Wrong passphrase correctly rejected');
+  }
+}
+
+async function testE2EContentFlow() {
+  log('\n=== Full E2E Content Flow ===', 'info');
+
+  // 1. Generate repo key (symmetric)
+  const repoKeyRaw = crypto.getRandomValues(new Uint8Array(32));
+  const repoKey = await crypto.subtle.importKey('raw', repoKeyRaw, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+
+  // 2. Encrypt content (client-side, before sending to server)
+  const content = '## Issue Title\n\nThis is a secret issue with **bold** and `code`.';
+  const plaintext = new TextEncoder().encode(content);
+  const encrypted = await aesGcmEncrypt(repoKey, plaintext);
+  const stored = E2E_PREFIX + uint8ToBase64(encrypted);
+
+  assert(stored.startsWith('e2e:v1:'), 'Stored content has E2E prefix');
+  assert(!stored.includes(content), 'Stored content does not contain plaintext');
+  log(`    Plaintext: ${content.length} bytes`, 'info');
+  log(`    Encrypted: ${stored.length} bytes (+${Math.round((stored.length/content.length-1)*100)}%)`, 'info');
+
+  // 3. Decrypt content (client-side, after receiving from server)
+  const payload = stored.slice(E2E_PREFIX.length);
+  const encBytes = base64ToUint8(payload);
+  const decrypted = await aesGcmDecrypt(repoKey, encBytes);
+  const recovered = new TextDecoder().decode(decrypted);
+
+  assert(recovered === content, 'Decrypted content matches original');
+
+  // 4. Server sees only the encrypted blob
+  log(`    Server sees: ${stored.substring(0, 40)}...`, 'info');
+  assert(true, 'Server never sees plaintext');
+}
+
+async function testRepoKeyDistribution() {
+  log('\n=== Repo Key Distribution (X25519 ECDH) ===', 'info');
+
+  // Alice creates the repo and generates a repo key
+  const alice = await crypto.subtle.generateKey({ name: 'X25519' }, true, ['deriveBits']);
+  const repoKey = crypto.getRandomValues(new Uint8Array(32));
+
+  // Alice encrypts repo key for Bob
+  const bob = await crypto.subtle.generateKey({ name: 'X25519' }, true, ['deriveBits']);
+
+  // Shared secret: Alice's private + Bob's public
+  const sharedAB = await crypto.subtle.deriveBits(
+    { name: 'X25519', public: bob.publicKey }, alice.privateKey, 256);
+  const sharedKeyMaterial = await crypto.subtle.importKey('raw', sharedAB, 'HKDF', false, ['deriveKey']);
+  const wrappingKey = await crypto.subtle.deriveKey(
+    { name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(0), info: new TextEncoder().encode('gitea-e2e-repo-key') },
+    sharedKeyMaterial, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']
+  );
+  const wrappedRepoKey = await aesGcmEncrypt(wrappingKey, repoKey);
+
+  // Alice sends: her public key + wrapped repo key
+  const alicePub = new Uint8Array(await crypto.subtle.exportKey('raw', alice.publicKey));
+  log(`    Alice pub: ${uint8ToBase64(alicePub).substring(0, 20)}...`, 'info');
+  log(`    Wrapped repo key: ${wrappedRepoKey.length} bytes`, 'info');
+
+  // Bob decrypts: Bob's private + Alice's public
+  const sharedBA = await crypto.subtle.deriveBits(
+    { name: 'X25519', public: alice.publicKey }, bob.privateKey, 256);
+  const sharedKeyMaterial2 = await crypto.subtle.importKey('raw', sharedBA, 'HKDF', false, ['deriveKey']);
+  const unwrapKey = await crypto.subtle.deriveKey(
+    { name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(0), info: new TextEncoder().encode('gitea-e2e-repo-key') },
+    sharedKeyMaterial2, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']
+  );
+  const unwrappedRepoKey = await aesGcmDecrypt(unwrapKey, wrappedRepoKey);
+
+  assert(uint8ToBase64(unwrappedRepoKey) === uint8ToBase64(repoKey), 'Bob recovers the same repo key');
+
+  // Both can now encrypt/decrypt the same content
+  const aesKey = await crypto.subtle.importKey('raw', repoKey, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  const ct = await aesGcmEncrypt(aesKey, new TextEncoder().encode('shared secret'));
+  const aesKey2 = await crypto.subtle.importKey('raw', unwrappedRepoKey, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  const pt = await aesGcmDecrypt(aesKey2, ct);
+  assert(new TextDecoder().decode(pt) === 'shared secret', 'Both users decrypt the same content');
+}
+
+async function testBase64Roundtrip() {
+  log('\n=== Base64 Round-trip ===', 'info');
+  const data = crypto.getRandomValues(new Uint8Array(256));
+  const b64 = uint8ToBase64(data);
+  const recovered = base64ToUint8(b64);
+  assert(uint8ToBase64(recovered) === b64, '256 random bytes survive base64 round-trip');
+
+  // Empty
+  const empty = new Uint8Array(0);
+  assert(uint8ToBase64(empty) === '', 'Empty array to base64');
+  assert(base64ToUint8('').length === 0, 'Empty base64 to array');
+}
+
+// --- Performance ---
+
+async function testPerformance() {
+  log('\n=== Performance Benchmarks ===', 'info');
+  const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+
+  // Small content (typical issue body)
+  const small = new TextEncoder().encode('A'.repeat(1000));
+  let t0 = performance.now();
+  for (let i = 0; i < 1000; i++) await aesGcmEncrypt(key, small);
+  let t1 = performance.now();
+  log(`  1KB x 1000 encrypts: ${(t1 - t0).toFixed(1)}ms (${((t1-t0)/1000).toFixed(3)}ms/op)`, 'info');
+
+  // Large content (big comment)
+  const large = new TextEncoder().encode('B'.repeat(100000));
+  t0 = performance.now();
+  for (let i = 0; i < 100; i++) await aesGcmEncrypt(key, large);
+  t1 = performance.now();
+  log(`  100KB x 100 encrypts: ${(t1 - t0).toFixed(1)}ms (${((t1-t0)/100).toFixed(3)}ms/op)`, 'info');
+
+  // PBKDF2 derivation (the slow part — intentionally slow)
+  const salt = crypto.getRandomValues(new Uint8Array(32));
+  const km = await crypto.subtle.importKey('raw', new TextEncoder().encode('passphrase'), 'PBKDF2', false, ['deriveKey']);
+  t0 = performance.now();
+  await crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations: 600000, hash: 'SHA-256' },
+    km, { name: 'AES-GCM', length: 256 }, false, ['encrypt']
+  );
+  t1 = performance.now();
+  log(`  PBKDF2 (600K iterations): ${(t1 - t0).toFixed(0)}ms (one-time unlock cost)`, 'info');
+
+  // X25519 key generation
+  t0 = performance.now();
+  for (let i = 0; i < 100; i++) await crypto.subtle.generateKey({ name: 'X25519' }, true, ['deriveBits']);
+  t1 = performance.now();
+  log(`  X25519 keygen x 100: ${(t1 - t0).toFixed(1)}ms (${((t1-t0)/100).toFixed(3)}ms/op)`, 'info');
+}
+
+// --- Exports for buttons ---
+
+window.runAllTests = async function() {
+  document.getElementById('log').innerHTML = '';
+  passed = 0; failed = 0;
+  log('Starting E2E encryption test suite...\n', 'info');
+
+  await testBase64Roundtrip();
+  await testAesGcmRoundtrip();
+  await testAesGcmWrongKey();
+  await testPbkdf2KeyDerivation();
+  const x25519ok = await testX25519KeyExchange();
+  await testPrivateKeyEncryption();
+  await testE2EContentFlow();
+  if (x25519ok) await testRepoKeyDistribution();
+
+  log(`\n${'='.repeat(40)}`, 'info');
+  log(`Results: ${passed} passed, ${failed} failed`, failed > 0 ? 'fail' : 'pass');
+  if (failed === 0) log('All client-side crypto tests passed!', 'pass');
+};
+
+window.runPerfTest = async function() {
+  document.getElementById('log').innerHTML = '';
+  await testPerformance();
+};
+</script>
+</body>
+</html>

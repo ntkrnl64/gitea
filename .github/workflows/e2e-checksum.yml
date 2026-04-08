@@ -46,9 +46,11 @@ jobs:
           JS_SHA256=$(sha256sum "$JS_FILE" | cut -d' ' -f1)
           WASM_SIZE=$(stat -c%s "$WASM_FILE")
 
-          echo "wasm_sha256=$WASM_SHA256" >> "$GITHUB_OUTPUT"
-          echo "js_sha256=$JS_SHA256" >> "$GITHUB_OUTPUT"
-          echo "wasm_size=$WASM_SIZE" >> "$GITHUB_OUTPUT"
+          {
+            echo "wasm_sha256=$WASM_SHA256"
+            echo "js_sha256=$JS_SHA256"
+            echo "wasm_size=$WASM_SIZE"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Create checksum branch if missing
         env:

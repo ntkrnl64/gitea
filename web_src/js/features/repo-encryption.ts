@@ -3,7 +3,7 @@
 // The server NEVER sees plaintext — all rendering is done client-side.
 // Decrypted content NEVER leaves the browser. No /markup round-trip.
 
-import {isE2EEncrypted, encryptContent, decryptContent, initCrypto} from '../modules/encryption.ts';
+import {isE2EEncrypted, encryptContent, decryptContent} from '../modules/encryption.ts';
 import {getRepoKey, hasUnlockedKeys, unlockUserKeys, hasUserKeyPair, setupUserKeyPair} from '../modules/encryption-keys.ts';
 import {renderMarkdownSafe} from '../modules/encryption-render.ts';
 import {showInfoToast, showErrorToast} from '../modules/toast.ts';
@@ -11,7 +11,7 @@ import {showInfoToast, showErrorToast} from '../modules/toast.ts';
 let currentRepoKey: Uint8Array | null = null;
 let e2eInitialized = false;
 
-function getRepoInfo(): {repoId: number; repoLink: string} | null {
+function getRepoInfo(): {repoId: number, repoLink: string} | null {
   const el = document.querySelector('#issue-page-info');
   if (!el) return null;
   return {
@@ -20,40 +20,55 @@ function getRepoInfo(): {repoId: number; repoLink: string} | null {
   };
 }
 
-// --- Passphrase prompt ---
-
 async function promptPassphrase(): Promise<string | null> {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
     overlay.className = 'ui dimmer modals page visible active';
-    overlay.innerHTML = `
-      <div class="ui small modal visible active" style="margin-top: -100px;">
-        <div class="header">E2E Encryption Passphrase</div>
-        <div class="content">
-          <div class="ui form">
-            <div class="field">
-              <label>Enter your E2E encryption passphrase to decrypt content:</label>
-              <input type="password" id="e2e-passphrase-input" autocomplete="off" placeholder="Passphrase">
-            </div>
-          </div>
-        </div>
-        <div class="actions">
-          <button class="ui cancel button" id="e2e-cancel">Cancel</button>
-          <button class="ui primary button" id="e2e-unlock">Unlock</button>
-        </div>
-      </div>
-    `;
-    document.body.appendChild(overlay);
+    const modal = document.createElement('div');
+    modal.className = 'ui small modal visible active';
+    modal.style.marginTop = '-100px';
 
-    const input = overlay.querySelector('#e2e-passphrase-input') as HTMLInputElement;
+    const header = document.createElement('div');
+    header.className = 'header';
+    header.textContent = 'E2E Encryption Passphrase';
+
+    const content = document.createElement('div');
+    content.className = 'content';
+    const form = document.createElement('div');
+    form.className = 'ui form';
+    const field = document.createElement('div');
+    field.className = 'field';
+    const label = document.createElement('label');
+    label.textContent = 'Enter your E2E encryption passphrase to decrypt content:';
+    const input = document.createElement('input');
+    input.type = 'password';
+    input.autocomplete = 'off';
+    input.placeholder = 'Passphrase';
+    field.append(label, input);
+    form.append(field);
+    content.append(form);
+
+    const actions = document.createElement('div');
+    actions.className = 'actions';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'ui cancel button';
+    cancelBtn.textContent = 'Cancel';
+    const unlockBtn = document.createElement('button');
+    unlockBtn.className = 'ui primary button';
+    unlockBtn.textContent = 'Unlock';
+    actions.append(cancelBtn, unlockBtn);
+
+    modal.append(header, content, actions);
+    overlay.append(modal);
+    document.body.append(overlay);
     input.focus();
 
     const cleanup = () => overlay.remove();
-    overlay.querySelector('#e2e-cancel')!.addEventListener('click', () => { cleanup(); resolve(null); });
-    overlay.querySelector('#e2e-unlock')!.addEventListener('click', () => { cleanup(); resolve(input.value); });
+    cancelBtn.addEventListener('click', () => { cleanup(); resolve(null) });
+    unlockBtn.addEventListener('click', () => { cleanup(); resolve(input.value) });
     input.addEventListener('keydown', (e: KeyboardEvent) => {
-      if (e.key === 'Enter') { cleanup(); resolve(input.value); }
-      if (e.key === 'Escape') { cleanup(); resolve(null); }
+      if (e.key === 'Enter') { cleanup(); resolve(input.value) }
+      if (e.key === 'Escape') { cleanup(); resolve(null) }
     });
   });
 }
@@ -62,47 +77,70 @@ async function promptSetupE2E(): Promise<string | null> {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
     overlay.className = 'ui dimmer modals page visible active';
-    overlay.innerHTML = `
-      <div class="ui small modal visible active" style="margin-top: -100px;">
-        <div class="header">Set Up E2E Encryption</div>
-        <div class="content">
-          <div class="ui form">
-            <p>This repository uses end-to-end encryption. You need to create an encryption key pair.</p>
-            <p><strong>Choose a strong passphrase.</strong> It protects your private key. The server never sees it.</p>
-            <div class="field">
-              <label>Passphrase:</label>
-              <input type="password" id="e2e-setup-pass" autocomplete="off" placeholder="Strong passphrase">
-            </div>
-            <div class="field">
-              <label>Confirm:</label>
-              <input type="password" id="e2e-setup-confirm" autocomplete="off" placeholder="Confirm passphrase">
-            </div>
-          </div>
-        </div>
-        <div class="actions">
-          <button class="ui cancel button" id="e2e-setup-cancel">Cancel</button>
-          <button class="ui primary button" id="e2e-setup-create">Create Key Pair</button>
-        </div>
-      </div>
-    `;
-    document.body.appendChild(overlay);
+    const modal = document.createElement('div');
+    modal.className = 'ui small modal visible active';
+    modal.style.marginTop = '-100px';
 
-    const pass = overlay.querySelector('#e2e-setup-pass') as HTMLInputElement;
-    pass.focus();
+    const header = document.createElement('div');
+    header.className = 'header';
+    header.textContent = 'Set Up E2E Encryption';
+
+    const content = document.createElement('div');
+    content.className = 'content';
+    const form = document.createElement('div');
+    form.className = 'ui form';
+
+    const desc = document.createElement('p');
+    desc.textContent = 'This repository uses end-to-end encryption. Choose a strong passphrase to protect your private key. The server never sees it.';
+
+    const field1 = document.createElement('div');
+    field1.className = 'field';
+    const label1 = document.createElement('label');
+    label1.textContent = 'Passphrase:';
+    const passInput = document.createElement('input');
+    passInput.type = 'password';
+    passInput.autocomplete = 'off';
+    passInput.placeholder = 'Strong passphrase';
+    field1.append(label1, passInput);
+
+    const field2 = document.createElement('div');
+    field2.className = 'field';
+    const label2 = document.createElement('label');
+    label2.textContent = 'Confirm:';
+    const confirmInput = document.createElement('input');
+    confirmInput.type = 'password';
+    confirmInput.autocomplete = 'off';
+    confirmInput.placeholder = 'Confirm passphrase';
+    field2.append(label2, confirmInput);
+
+    form.append(desc, field1, field2);
+    content.append(form);
+
+    const actions = document.createElement('div');
+    actions.className = 'actions';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'ui cancel button';
+    cancelBtn.textContent = 'Cancel';
+    const createBtn = document.createElement('button');
+    createBtn.className = 'ui primary button';
+    createBtn.textContent = 'Create Key Pair';
+    actions.append(cancelBtn, createBtn);
+
+    modal.append(header, content, actions);
+    overlay.append(modal);
+    document.body.append(overlay);
+    passInput.focus();
 
     const cleanup = () => overlay.remove();
-    overlay.querySelector('#e2e-setup-cancel')!.addEventListener('click', () => { cleanup(); resolve(null); });
-    overlay.querySelector('#e2e-setup-create')!.addEventListener('click', () => {
-      const confirm = overlay.querySelector('#e2e-setup-confirm') as HTMLInputElement;
-      if (pass.value !== confirm.value) { showErrorToast('Passphrases do not match'); return; }
-      if (pass.value.length < 8) { showErrorToast('Passphrase must be at least 8 characters'); return; }
+    cancelBtn.addEventListener('click', () => { cleanup(); resolve(null) });
+    createBtn.addEventListener('click', () => {
+      if (passInput.value !== confirmInput.value) { showErrorToast('Passphrases do not match'); return }
+      if (passInput.value.length < 8) { showErrorToast('Passphrase must be at least 8 characters'); return }
       cleanup();
-      resolve(pass.value);
+      resolve(passInput.value);
     });
   });
 }
-
-// --- Initialize E2E for the current page ---
 
 async function initE2E(): Promise<void> {
   if (e2eInitialized) return;
@@ -111,14 +149,12 @@ async function initE2E(): Promise<void> {
   const repoInfo = getRepoInfo();
   if (!repoInfo || !repoInfo.repoLink) return;
 
-  // Check if there's encrypted content on the page
   let hasEncrypted = false;
   for (const el of document.querySelectorAll('.raw-content')) {
-    if (el.textContent?.startsWith('e2e:v1:')) { hasEncrypted = true; break; }
+    if (el.textContent?.startsWith('e2e:v1:')) { hasEncrypted = true; break }
   }
   if (!hasEncrypted) return;
 
-  // Need to unlock keys
   if (!hasUnlockedKeys()) {
     const hasKey = await hasUserKeyPair();
     if (!hasKey) {
@@ -135,25 +171,20 @@ async function initE2E(): Promise<void> {
       const passphrase = await promptPassphrase();
       if (!passphrase) return;
       const ok = await unlockUserKeys(passphrase);
-      if (!ok) { showErrorToast('Wrong passphrase'); return; }
+      if (!ok) { showErrorToast('Wrong passphrase'); return }
     }
   }
 
-  // Get repo key
   const repoLink = repoInfo.repoLink.replace(/^\//, '');
   currentRepoKey = await getRepoKey(repoInfo.repoId, repoLink);
   if (!currentRepoKey) return;
 
-  // Decrypt all visible encrypted content — entirely client-side
   await decryptVisibleContent();
 }
-
-// --- Decrypt all encrypted content on the page (NEVER sends plaintext to server) ---
 
 async function decryptVisibleContent(): Promise<void> {
   if (!currentRepoKey) return;
 
-  // Decrypt raw content divs (used for editing)
   for (const div of document.querySelectorAll('.raw-content')) {
     const text = div.textContent || '';
     if (!isE2EEncrypted(text)) continue;
@@ -162,7 +193,6 @@ async function decryptVisibleContent(): Promise<void> {
       const decrypted = await decryptContent(text, currentRepoKey);
       div.textContent = decrypted;
 
-      // Render markdown ENTIRELY CLIENT-SIDE — never send to server
       const renderDiv = div.previousElementSibling;
       if (renderDiv?.classList.contains('render-content')) {
         renderDiv.innerHTML = renderMarkdownSafe(decrypted);
@@ -173,7 +203,6 @@ async function decryptVisibleContent(): Promise<void> {
     }
   }
 
-  // Decrypt issue title if encrypted
   for (const el of document.querySelectorAll('.issue-title-display, #issue-title')) {
     const text = el.textContent || '';
     if (!isE2EEncrypted(text)) continue;
@@ -186,10 +215,7 @@ async function decryptVisibleContent(): Promise<void> {
   }
 }
 
-// --- Intercept form submissions to encrypt content ---
-
 export function initRepoEncryption(): void {
-  // Hook into form submissions — encrypt content BEFORE sending to server
   document.addEventListener('submit', async (e: Event) => {
     const form = e.target as HTMLFormElement;
     if (!form.classList.contains('form-fetch-action')) return;
@@ -205,7 +231,6 @@ export function initRepoEncryption(): void {
 
       try {
         contentField.value = await encryptContent(plaintext, currentRepoKey);
-        // Re-submit with encrypted content
         form.dispatchEvent(new Event('submit', {bubbles: true, cancelable: true}));
       } catch (err) {
         showErrorToast(`Encryption failed: ${err}`);
@@ -214,7 +239,6 @@ export function initRepoEncryption(): void {
     }
   }, {capture: true});
 
-  // Hook into issue title field
   document.addEventListener('submit', async (e: Event) => {
     const form = e.target as HTMLFormElement;
     if (!currentRepoKey) return;
@@ -232,6 +256,5 @@ export function initRepoEncryption(): void {
     }
   }, {capture: true});
 
-  // Initialize E2E (lazy — only when encrypted content is detected)
   initE2E();
 }

@@ -1,36 +1,31 @@
 // Minimal client-side markdown renderer for E2E encrypted content.
-// This renders markdown entirely in the browser — decrypted content
+// Renders markdown entirely in the browser — decrypted content
 // NEVER leaves the client. No server round-trip for rendering.
 //
-// Only supports safe subset of markdown (no raw HTML injection).
-// For full rendering fidelity, users can disable E2E encryption.
+// HTML literals here are intentional — all user input is pre-escaped via escapeHtml().
+/* eslint-disable github/unescaped-html-literal */
 
-// Escape HTML to prevent XSS from decrypted content
 function escapeHtml(text: string): string {
   const div = document.createElement('div');
-  div.appendChild(document.createTextNode(text));
+  div.append(document.createTextNode(text));
   return div.innerHTML;
 }
 
-// Render markdown to safe HTML — entirely client-side
 export function renderMarkdownSafe(markdown: string): string {
   const lines = markdown.split('\n');
   const html: string[] = [];
   let inCodeBlock = false;
   let inList = false;
-  let codeContent: string[] = [];
+  const codeContent: string[] = [];
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-
-    // Fenced code blocks
+  for (const line of lines) {
     if (line.startsWith('```')) {
       if (inCodeBlock) {
         html.push(`<pre><code>${escapeHtml(codeContent.join('\n'))}</code></pre>`);
-        codeContent = [];
+        codeContent.length = 0;
         inCodeBlock = false;
       } else {
-        if (inList) { html.push('</ul>'); inList = false; }
+        if (inList) { html.push('</ul>'); inList = false }
         inCodeBlock = true;
       }
       continue;
@@ -40,42 +35,36 @@ export function renderMarkdownSafe(markdown: string): string {
       continue;
     }
 
-    // Empty line
     if (line.trim() === '') {
-      if (inList) { html.push('</ul>'); inList = false; }
+      if (inList) { html.push('</ul>'); inList = false }
       html.push('');
       continue;
     }
 
-    // Headers
-    const headerMatch = line.match(/^(#{1,6})\s+(.+)/);
+    const headerMatch = /^(#{1,6})\s+(.+)/.exec(line);
     if (headerMatch) {
-      if (inList) { html.push('</ul>'); inList = false; }
+      if (inList) { html.push('</ul>'); inList = false }
       const level = headerMatch[1].length;
       html.push(`<h${level}>${renderInline(headerMatch[2])}</h${level}>`);
       continue;
     }
 
-    // Horizontal rule
     if (/^[-*_]{3,}\s*$/.test(line)) {
-      if (inList) { html.push('</ul>'); inList = false; }
+      if (inList) { html.push('</ul>'); inList = false }
       html.push('<hr>');
       continue;
     }
 
-    // Blockquote
     if (line.startsWith('> ')) {
-      if (inList) { html.push('</ul>'); inList = false; }
+      if (inList) { html.push('</ul>'); inList = false }
       html.push(`<blockquote><p>${renderInline(line.slice(2))}</p></blockquote>`);
       continue;
     }
 
-    // Unordered list
-    const ulMatch = line.match(/^[\s]*[-*+]\s+(.+)/);
+    const ulMatch = /^\s*[-*+]\s+(.+)/.exec(line);
     if (ulMatch) {
-      if (!inList) { html.push('<ul>'); inList = true; }
-      // Checkbox
-      const cbMatch = ulMatch[1].match(/^\[([ xX])\]\s*(.*)/);
+      if (!inList) { html.push('<ul>'); inList = true }
+      const cbMatch = /^\[([ xX])\]\s*(.*)/.exec(ulMatch[1]);
       if (cbMatch) {
         const checked = cbMatch[1] !== ' ' ? ' checked disabled' : ' disabled';
         html.push(`<li><input type="checkbox"${checked}> ${renderInline(cbMatch[2])}</li>`);
@@ -85,17 +74,14 @@ export function renderMarkdownSafe(markdown: string): string {
       continue;
     }
 
-    // Ordered list
-    const olMatch = line.match(/^\d+\.\s+(.+)/);
+    const olMatch = /^\d+\.\s+(.+)/.exec(line);
     if (olMatch) {
-      // Simplified: treat as unordered for safety
-      if (!inList) { html.push('<ul>'); inList = true; }
+      if (!inList) { html.push('<ul>'); inList = true }
       html.push(`<li>${renderInline(olMatch[1])}</li>`);
       continue;
     }
 
-    // Paragraph
-    if (inList) { html.push('</ul>'); inList = false; }
+    if (inList) { html.push('</ul>'); inList = false }
     html.push(`<p>${renderInline(line)}</p>`);
   }
 
@@ -107,31 +93,18 @@ export function renderMarkdownSafe(markdown: string): string {
   return html.join('\n');
 }
 
-// Render inline markdown elements
 function renderInline(text: string): string {
   let result = escapeHtml(text);
 
-  // Code spans (before other inline formatting)
   result = result.replace(/`([^`]+)`/g, '<code>$1</code>');
-
-  // Bold + italic
   result = result.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
-  // Bold
   result = result.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   result = result.replace(/__(.+?)__/g, '<strong>$1</strong>');
-  // Italic
   result = result.replace(/\*(.+?)\*/g, '<em>$1</em>');
   result = result.replace(/_(.+?)_/g, '<em>$1</em>');
-  // Strikethrough
   result = result.replace(/~~(.+?)~~/g, '<del>$1</del>');
-
-  // Links [text](url) — only allow http/https
   result = result.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
     '<a href="$2" rel="nofollow noopener noreferrer" target="_blank">$1</a>');
-
-  // Auto-link bare URLs
-  result = result.replace(/(^|[^"=])(https?:\/\/\S+)/g,
-    '$1<a href="$2" rel="nofollow noopener noreferrer" target="_blank">$2</a>');
 
   return result;
 }
