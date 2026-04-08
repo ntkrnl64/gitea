@@ -1,0 +1,10 @@
+{
+  "commit": "4fef4e540312ed1f46ad8770a6b246448a7cf883",
+  "ref": "refs/heads/main",
+  "ref_name": "main",
+  "wasm_sha256": "330dd24e43eccb33740daa0a68d31558aedaff653b045570419f8ae767a7b4f0",
+  "js_sha256": "2719cdcbe8ac3ed57b15690e1655d0b4afac31f18c9f855061eab981a068b61d",
+  "wasm_size": 63094,
+  "built_at": "2026-04-08T14:39:42Z",
+  "workflow_run": "https://github.com/ntkrnl64/gitea/actions/runs/24141308628"
+}
