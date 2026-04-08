@@ -50,71 +50,68 @@ jobs:
           echo "js_sha256=$JS_SHA256" >> "$GITHUB_OUTPUT"
           echo "wasm_size=$WASM_SIZE" >> "$GITHUB_OUTPUT"
 
-      - name: Prepare checksum files
+      - name: Create checksum branch if missing
         env:
-          WASM_SHA256: ${{ steps.checksums.outputs.wasm_sha256 }}
-          JS_SHA256: ${{ steps.checksums.outputs.js_sha256 }}
-          WASM_SIZE: ${{ steps.checksums.outputs.wasm_size }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          # Clean workspace for checksum-only commit
-          CHECKSUM_DIR=$(mktemp -d)
+          # Check if the checksum branch exists on the remote
+          if ! git ls-remote --exit-code --heads origin checksum >/dev/null 2>&1; then
+            echo "Creating orphan checksum branch..."
+            # Create it via the GitHub API — push an initial commit with just a README
+            echo '# E2E Encryption WASM Checksums
+
+          Each file is named by commit SHA or tag name.
+          Verification: https://giteachecksums.krnl64.win' > /tmp/readme_content.txt
+
+            README_B64=$(base64 -w0 /tmp/readme_content.txt)
+
+            # Create a blob
+            BLOB_SHA=$(gh api repos/${{ github.repository }}/git/blobs \
+              -f content="$README_B64" -f encoding="base64" --jq '.sha')
+
+            # Create a tree with just the README
+            TREE_SHA=$(gh api repos/${{ github.repository }}/git/trees \
+              --input <(printf '{"tree":[{"path":"README.md","mode":"100644","type":"blob","sha":"%s"}]}' "$BLOB_SHA") \
+              --jq '.sha')
+
+            # Create a commit (no parent = orphan)
+            COMMIT_SHA=$(gh api repos/${{ github.repository }}/git/commits \
+              --input <(printf '{"message":"init: checksum branch","tree":"%s","parents":[]}' "$TREE_SHA") \
+              --jq '.sha')
+
+            # Create the ref
+            gh api repos/${{ github.repository }}/git/refs \
+              --input <(printf '{"ref":"refs/heads/checksum","sha":"%s"}' "$COMMIT_SHA")
+
+            echo "Checksum branch created at $COMMIT_SHA"
+          fi
+
+      - name: Prepare checksum files
+        run: |
+          # Fetch the checksum branch and check it out
+          git fetch origin checksum
+          git checkout checksum
 
           BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
           # Write checksum file named by commit SHA
           printf '{\n  "commit": "%s",\n  "ref": "%s",\n  "ref_name": "%s",\n  "wasm_sha256": "%s",\n  "js_sha256": "%s",\n  "wasm_size": %s,\n  "built_at": "%s",\n  "workflow_run": "%s"\n}\n' \
             "${{ github.sha }}" "${{ github.ref }}" "${{ github.ref_name }}" \
-            "$WASM_SHA256" "$JS_SHA256" "$WASM_SIZE" "$BUILT_AT" \
+            "${{ steps.checksums.outputs.wasm_sha256 }}" "${{ steps.checksums.outputs.js_sha256 }}" \
+            "${{ steps.checksums.outputs.wasm_size }}" "$BUILT_AT" \
             "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            > "$CHECKSUM_DIR/checksum.json"
+            > "${{ github.sha }}"
 
-          echo "$CHECKSUM_DIR" > /tmp/checksum_dir
-
-      - name: Publish commit checksum
-        env:
-          WASM_SHA256: ${{ steps.checksums.outputs.wasm_sha256 }}
-          JS_SHA256: ${{ steps.checksums.outputs.js_sha256 }}
-          WASM_SIZE: ${{ steps.checksums.outputs.wasm_size }}
-        run: |
-          CHECKSUM_DIR=$(cat /tmp/checksum_dir)
-          BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-
-          # Set up a clean worktree for the checksum branch
-          git fetch origin checksum 2>/dev/null || true
-
-          # Check if checksum branch exists
-          if git rev-parse --verify origin/checksum 2>/dev/null; then
-            git worktree add /tmp/checksum-wt origin/checksum
-          else
-            git worktree add --orphan /tmp/checksum-wt checksum
-            cd /tmp/checksum-wt
-            git checkout --orphan checksum
-            echo '# E2E Encryption WASM Checksums' > README.md
-            echo '' >> README.md
-            echo 'Each file is named by commit SHA or tag name.' >> README.md
-            echo 'Verification: https://giteachecksums.krnl64.win' >> README.md
-            git add README.md
-            git -c user.name="github-actions[bot]" \
-                -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-                commit -m "init: checksum branch"
-            git push origin checksum
-            cd -
-          fi
-
-          # Copy checksum file with commit SHA name
-          cp "$CHECKSUM_DIR/checksum.json" "/tmp/checksum-wt/${{ github.sha }}"
-
-          # For tags, also create tag-named file and update latest
+          # For tags, also create tag-named file and latest pointer
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            cp "$CHECKSUM_DIR/checksum.json" "/tmp/checksum-wt/${{ github.ref_name }}"
-            cp "$CHECKSUM_DIR/checksum.json" "/tmp/checksum-wt/latest"
+            cp "${{ github.sha }}" "${{ github.ref_name }}"
+            cp "${{ github.sha }}" "latest"
           fi
 
-      - name: Commit checksums via verified bot
+      - name: Commit checksums
         uses: siiway/verified_bot_commit@v0
         with:
           ref: refs/heads/checksum
-          workspace: /tmp/checksum-wt
           message: |
             checksum: ${{ github.sha }}
 
@@ -126,3 +123,4 @@ jobs:
             ${{ github.sha }}
             ${{ github.ref_type == 'tag' && github.ref_name || '' }}
             ${{ github.ref_type == 'tag' && 'latest' || '' }}
+            README.md

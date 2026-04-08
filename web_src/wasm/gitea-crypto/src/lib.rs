@@ -184,7 +184,7 @@ mod tests {
     #[test]
     fn test_aes256gcm_wrong_key() {
         let key1 = [1u8; 32];
-        let key2 = [2u8; 32];
+        let _key2 = [2u8; 32];
         let encrypted = aes256gcm_encrypt(&key1, b"secret").unwrap();
         // On native (non-wasm), JsValue::from_str panics, so we just verify
         // the encrypt roundtrip works with the correct key
